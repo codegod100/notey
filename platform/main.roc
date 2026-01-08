@@ -1,6 +1,6 @@
 platform ""
     requires {} { main! : {} => Try({}, [Exit(I32)]) }
-    exposes [Stdout, Stderr, WebServer, Storage]
+    exposes [Stdout, Stderr, WebServer, Storage, SQLite]
     packages {}
     provides { main_for_host!: "main_for_host" }
     targets: {
@@ -22,6 +22,7 @@ import Stdout
 import Stderr
 import WebServer
 import Storage
+import SQLite
 
 
 main_for_host! : {} => I32

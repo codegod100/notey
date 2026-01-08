@@ -5,12 +5,20 @@ app [main!] {
 import pf.Stdout
 import pf.Stderr
 import pf.WebServer
-import pf.Storage
+import pf.SQLite
 
 main! : {} => Try({}, [Exit(I32)])
 main! = |{}| {
     port = 8080
     Stdout.line!("Starting Notey server on port ${port.to_str()}...")
+
+    match SQLite.init!({}) {
+        Ok({}) => {}
+        Err(msg) => {
+            Stderr.line!("Failed to initialize database: ${msg}")
+            return Err(Exit(1))
+        }
+    }
 
     match WebServer.listen!(port) {
         Ok({}) =>
@@ -21,7 +29,7 @@ main! = |{}| {
         }
     }
 
-    Stdout.line!("Storage backend: .roc_storage/notes.json")
+    Stdout.line!("Storage backend: SQLite (.roc_storage/notes.db)")
     event_loop!([])
 }
 
@@ -97,28 +105,9 @@ handle_http_request! = |request| {
 
 get_notes! : {} => Str
 get_notes! = |{}| {
-    match Storage.load!("notes.json") {
-        Ok(content) => {
-            if Str.count_utf8_bytes(content) == 0 {
-                default = "{\"notes\":{},\"nextId\":1}"
-                match Storage.save!("notes.json", default) {
-                    Ok({}) => {}
-                    Err(_) => {}
-                }
-                http_ok_response("application/json", default)
-            } else {
-                http_ok_response("application/json", content)
-            }
-        }
-        Err(NotFound) => {
-            default = "{\"notes\":{},\"nextId\":1}"
-            match Storage.save!("notes.json", default) {
-                Ok({}) => {}
-                Err(_) => {}
-            }
-            http_ok_response("application/json", default)
-        }
-        Err(_) => http_500("Failed to load notes")
+    match SQLite.get_notes!({}) {
+        Ok(content) => http_ok_response("application/json", content)
+        Err(msg) => http_500("Failed to load notes: ${msg}")
     }
 }
 
@@ -130,21 +119,9 @@ save_notes! = |request| {
         Err(_) => "{}"
     }
     
-    match Storage.load!("notes.json") {
-        Ok(existing) => {
-            match Storage.save!("notes.json", body) {
-                Ok({}) => {}
-                Err(_) => {}
-            }
-            http_ok_response("application/json", "{\"success\":true}")
-        }
-        Err(_) => {
-            match Storage.save!("notes.json", body) {
-                Ok({}) => {}
-                Err(_) => {}
-            }
-            http_ok_response("application/json", "{\"success\":true}")
-        }
+    match SQLite.save_notes!(body) {
+        Ok({}) => http_ok_response("application/json", "{\"success\":true}")
+        Err(msg) => http_500("Failed to save notes: ${msg}")
     }
 }
 

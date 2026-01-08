@@ -3,6 +3,12 @@
 const std = @import("std");
 const builtins = @import("builtins");
 
+// SQLite cImport
+const sqlite = @cImport({
+    // Add include path to build.zig to make this work
+    @cInclude("sqlite3.h");
+});
+
 // Use lower-level C environ access to avoid std.os.environ initialization issues
 extern var environ: [*:null]?[*:0]u8;
 extern fn getenv(name: [*:0]const u8) ?[*:0]u8;
@@ -21,12 +27,6 @@ fn initEnviron() void {
 
 /// Global flag to track if dbg or expect_failed was called.
 var debug_or_expect_called: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
-
-/// Host environment with WebSocket server state
-const HostEnv = struct {
-    gpa: std.heap.GeneralPurposeAllocator(.{}),
-    server: ?*WebSocketServer = null,
-};
 
 // Use C allocator for Roc allocations
 const c_allocator = std.heap.c_allocator;
@@ -1034,13 +1034,21 @@ fn hostedStdoutLine(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_pt
 /// Array of hosted function pointers, sorted by module name alphabetically,
 /// then by function name alphabetically within each module.
 const hosted_function_ptrs = [_]builtins.host_abi.HostedFn{
+    // SQLite: get_notes!, init!, save_notes!
+    hostedSqliteGetNotes,
+    hostedSqliteInit,
+    hostedSqliteSaveNotes,
+    // Stderr: line!
     hostedStderrLine,
+    // Stdout: line!
     hostedStdoutLine,
+    // Storage: delete!, exists!, list!, load!, save!
     hostedStorageDelete,
     hostedStorageExists,
     hostedStorageList,
     hostedStorageLoad,
     hostedStorageSave,
+    // WebServer: accept!, broadcast!, close!, listen!, run!, send!
     hostedWebServerAccept,
     hostedWebServerBroadcast,
     hostedWebServerClose,
@@ -1088,14 +1096,297 @@ fn platform_main() c_int {
 
     return exit_code;
 }
-const storage_dir = ".roc_storage";
+// ============================================================================
+// SQLite Implementation (using cImport)
+// ============================================================================
 
-fn ensureStorageDir() !void {
-    std.fs.cwd().makeDir(storage_dir) catch |err| switch (err) {
+const db_path = ".roc_storage/notes.db";
+var db_ptr: ?*sqlite.sqlite3 = null;
+
+/// Host environment with WebSocket server and database state
+const HostEnv = struct {
+    gpa: std.heap.GeneralPurposeAllocator(.{}),
+    server: ?*WebSocketServer = null,
+};
+
+fn initDatabase() !void {
+    std.fs.cwd().makeDir(".roc_storage") catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
+
+    const rc = sqlite.sqlite3_open(db_path, @ptrCast(&db_ptr));
+    if (rc != sqlite.SQLITE_OK) {
+        return error.OpenFailed;
+    }
+
+    const create_table =
+        \\CREATE TABLE IF NOT EXISTS notes (
+        \\    id TEXT PRIMARY KEY,
+        \\    content TEXT NOT NULL,
+        \\    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+        \\    updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        \\);
+    ;
+
+    var stmt: ?*sqlite.sqlite3_stmt = undefined;
+    const prep_rc = sqlite.sqlite3_prepare_v2(db_ptr, create_table, -1, &stmt, null);
+    if (prep_rc != sqlite.SQLITE_OK) {
+        return error.PrepareFailed;
+    }
+    defer _ = sqlite.sqlite3_finalize(stmt);
+
+    const exec_rc = sqlite.sqlite3_step(stmt);
+    if (exec_rc != sqlite.SQLITE_DONE) {
+        return error.ExecFailed;
+    }
 }
+
+/// Hosted function: SQLite.init!
+/// Returns Result {} Str
+fn hostedSqliteInit(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
+    _ = args_ptr;
+
+    const Result = extern struct {
+        payload: RocStr,
+        discriminant: u8,
+    };
+    const result: *Result = @ptrCast(@alignCast(ret_ptr));
+
+    initDatabase() catch |err| {
+        const msg = switch (err) {
+            error.OpenFailed => "Failed to open database",
+            error.PrepareFailed => "Failed to prepare statement",
+            error.ExecFailed => "Failed to create table",
+            else => "Failed to initialize database",
+        };
+        result.payload = RocStr.init(msg.ptr, msg.len, ops);
+        result.discriminant = 0; // Err
+        return;
+    };
+
+    result.payload = RocStr.empty();
+    result.discriminant = 1; // Ok
+}
+
+/// Hosted function: SQLite.get_notes!
+/// Returns Result Str Str
+fn hostedSqliteGetNotes(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
+    _ = args_ptr;
+
+    const Result = extern struct {
+        payload: RocStr,
+        discriminant: u8,
+    };
+    const result: *Result = @ptrCast(@alignCast(ret_ptr));
+
+    if (db_ptr == null) {
+        const msg = "Database not initialized";
+        result.payload = RocStr.init(msg.ptr, msg.len, ops);
+        result.discriminant = 0; // Err
+        return;
+    }
+
+    const query = "SELECT id, content FROM notes ORDER BY id DESC";
+    var stmt: ?*sqlite.sqlite3_stmt = undefined;
+
+    const prep_rc = sqlite.sqlite3_prepare_v2(db_ptr, query, -1, &stmt, null);
+    if (prep_rc != sqlite.SQLITE_OK) {
+        const msg = "Failed to prepare query";
+        result.payload = RocStr.init(msg.ptr, msg.len, ops);
+        result.discriminant = 0;
+        return;
+    }
+    defer _ = sqlite.sqlite3_finalize(stmt);
+
+    var notes = std.ArrayListUnmanaged(struct { id: []const u8, content: []const u8 }){};
+    defer {
+        for (notes.items) |note| {
+            c_allocator.free(note.id);
+            c_allocator.free(note.content);
+        }
+        notes.deinit(c_allocator);
+    }
+
+    while (true) {
+        const step_rc = sqlite.sqlite3_step(stmt);
+        if (step_rc == sqlite.SQLITE_DONE) break;
+        if (step_rc != sqlite.SQLITE_ROW) break;
+
+        const id_ptr = sqlite.sqlite3_column_text(stmt, 0);
+        const content_ptr = sqlite.sqlite3_column_text(stmt, 1);
+
+        const id = if (id_ptr) |p| std.mem.sliceTo(p, 0) else "";
+        const content = if (content_ptr) |p| std.mem.sliceTo(p, 0) else "";
+
+        const id_dupe = c_allocator.dupe(u8, id) catch break;
+        const content_dupe = c_allocator.dupe(u8, content) catch {
+            c_allocator.free(id_dupe);
+            break;
+        };
+
+        notes.append(c_allocator, .{
+            .id = id_dupe,
+            .content = content_dupe,
+        }) catch {
+            c_allocator.free(id_dupe);
+            c_allocator.free(content_dupe);
+            break;
+        };
+    }
+
+    const next_id: i64 = if (notes.items.len == 0) 1 else blk: {
+        var max_id: i64 = 0;
+        for (notes.items) |note| {
+            const id = std.fmt.parseInt(i64, note.id, 10) catch 0;
+            if (id > max_id) max_id = id;
+        }
+        break :blk max_id + 1;
+    };
+
+    var json = std.ArrayList(u8).initCapacity(c_allocator, 1024) catch return;
+    defer json.deinit(c_allocator);
+
+    json.writer(c_allocator).print("{{\"notes\":{{", .{}) catch {};
+
+    var first = true;
+    for (notes.items) |note| {
+        if (!first) json.writer(c_allocator).writeAll(",") catch {};
+        first = false;
+
+        json.writer(c_allocator).print("\"{s}\":{{\"id\":\"{s}\",\"content\":\"", .{ note.id, note.id }) catch {};
+
+        for (note.content) |c| {
+            switch (c) {
+                '"' => json.writer(c_allocator).writeAll("\\\"") catch {},
+                '\\' => json.writer(c_allocator).writeAll("\\\\") catch {},
+                '\n' => json.writer(c_allocator).writeAll("\\n") catch {},
+                '\r' => json.writer(c_allocator).writeAll("\\r") catch {},
+                '\t' => json.writer(c_allocator).writeAll("\\t") catch {},
+                else => json.writer(c_allocator).writeByte(c) catch {},
+            }
+        }
+
+        json.writer(c_allocator).writeAll("\"}") catch {};
+    }
+
+    json.writer(c_allocator).print("}},\"nextId\":{d}}}", .{next_id}) catch {};
+
+    result.payload = RocStr.init(json.items.ptr, json.items.len, ops);
+    result.discriminant = 1; // Ok
+}
+
+/// Hosted function: SQLite.save_notes!
+/// Returns Result {} Str
+fn hostedSqliteSaveNotes(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
+    const Args = extern struct { notes_json: RocStr };
+    const args: *const Args = @ptrCast(@alignCast(args_ptr));
+    const notes_json = getAsSlice(&args.notes_json);
+
+    const Result = extern struct {
+        payload: RocStr,
+        discriminant: u8,
+    };
+    const result: *Result = @ptrCast(@alignCast(ret_ptr));
+
+    if (db_ptr == null) {
+        const msg = "Database not initialized";
+        result.payload = RocStr.init(msg.ptr, msg.len, ops);
+        result.discriminant = 0; // Err
+        return;
+    }
+
+    // Delete all existing notes
+    var delete_stmt: ?*sqlite.sqlite3_stmt = undefined;
+    const delete_sql = "DELETE FROM notes";
+    if (sqlite.sqlite3_prepare_v2(db_ptr, delete_sql, -1, &delete_stmt, null) == sqlite.SQLITE_OK) {
+        defer _ = sqlite.sqlite3_finalize(delete_stmt);
+        _ = sqlite.sqlite3_step(delete_stmt);
+    }
+
+    const notes_start = std.mem.indexOf(u8, notes_json, "\"notes\":{") orelse {
+        const msg = "Invalid JSON format";
+        result.payload = RocStr.init(msg.ptr, msg.len, ops);
+        result.discriminant = 0;
+        return;
+    };
+
+    var pos = notes_start + "\"notes\":{".len;
+
+    const insert_sql = "INSERT INTO notes (id, content) VALUES (?, ?)";
+    var insert_stmt: ?*sqlite.sqlite3_stmt = undefined;
+
+    while (pos < notes_json.len) : (pos += 1) {
+        while (pos < notes_json.len and (notes_json[pos] == ' ' or notes_json[pos] == ',' or notes_json[pos] == '\n')) : (pos += 1) {}
+
+        if (pos >= notes_json.len or notes_json[pos] == '}') break;
+
+        if (notes_json[pos] != '"') break;
+        const id_start = pos + 1;
+        const id_end = std.mem.indexOfPos(u8, notes_json, id_start, "\"") orelse break;
+        const id = notes_json[id_start..id_end];
+        pos = id_end + 1;
+
+        pos = std.mem.indexOfPos(u8, notes_json, pos, "\"content\":\"") orelse break;
+        pos += "\"content\":\"".len;
+
+        const content_start = pos;
+        var content_end = pos;
+        while (content_end < notes_json.len) {
+            if (notes_json[content_end] == '"' and (content_end == content_start or notes_json[content_end - 1] != '\\')) {
+                break;
+            }
+            if (content_end + 1 < notes_json.len and notes_json[content_end] == '\\' and notes_json[content_end + 1] == '"') {
+                content_end += 1;
+            }
+            content_end += 1;
+        }
+
+        if (content_end >= notes_json.len) break;
+
+        var content = c_allocator.alloc(u8, content_end - content_start) catch break;
+        errdefer c_allocator.free(content);
+
+        var content_idx: usize = 0;
+        var i = content_start;
+        while (i < content_end) {
+            if (notes_json[i] == '\\' and i + 1 < content_end) {
+                i += 1;
+                switch (notes_json[i]) {
+                    '"' => content[content_idx] = '"',
+                    '\\' => content[content_idx] = '\\',
+                    'n' => content[content_idx] = '\n',
+                    'r' => content[content_idx] = '\r',
+                    't' => content[content_idx] = '\t',
+                    else => content[content_idx] = notes_json[i],
+                }
+            } else {
+                content[content_idx] = notes_json[i];
+            }
+            content_idx += 1;
+            i += 1;
+        }
+        content = content[0..content_idx];
+
+        // Prepare and execute insert statement
+        const prep_rc = sqlite.sqlite3_prepare_v2(db_ptr, insert_sql, -1, &insert_stmt, null);
+        if (prep_rc == sqlite.SQLITE_OK) {
+            _ = sqlite.sqlite3_bind_text(insert_stmt, 1, id.ptr, @intCast(id.len), null);
+            _ = sqlite.sqlite3_bind_text(insert_stmt, 2, content.ptr, @intCast(content.len), null);
+            _ = sqlite.sqlite3_step(insert_stmt);
+            _ = sqlite.sqlite3_finalize(insert_stmt);
+            insert_stmt = null;
+        }
+
+        c_allocator.free(content);
+        pos = content_end + 1;
+    }
+
+    result.payload = RocStr.empty();
+    result.discriminant = 1; // Ok
+}
+
+const storage_dir = ".roc_storage";
 
 fn getStoragePath(key: []const u8, buf: *[4096]u8) []const u8 {
     const prefix = storage_dir ++ "/";
@@ -1105,8 +1396,6 @@ fn getStoragePath(key: []const u8, buf: *[4096]u8) []const u8 {
     return buf[0 .. prefix.len + copy_len];
 }
 
-/// Hosted function: Storage.delete!
-/// Returns Result {} Str
 fn hostedStorageDelete(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
     const Args = extern struct { key: RocStr };
     const args: *const Args = @ptrCast(@alignCast(args_ptr));
@@ -1254,6 +1543,13 @@ fn hostedStorageLoad(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_p
 
     result.payload.ok_str = RocStr.init(content.ptr, content.len, ops);
     result.discriminant = 1; // Ok
+}
+
+fn ensureStorageDir() !void {
+    std.fs.cwd().makeDir(storage_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
 }
 
 /// Hosted function: Storage.save!

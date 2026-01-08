@@ -221,6 +221,16 @@ fn buildHostLib(
 
     if (target.result.os.tag != .windows and target.result.os.tag != .wasi) {
         host_lib.linkLibC();
+        // Use vendored sqlite3 for all targets to ensure consistent behavior and static linking support
+        host_lib.addIncludePath(b.path("platform/vendor/sqlite3"));
+        host_lib.addCSourceFile(.{
+            .file = b.path("platform/vendor/sqlite3/sqlite3.c"),
+            .flags = &.{
+                "-DSQLITE_THREADSAFE=2", // Multi-thread mode
+                "-DSQLITE_OMIT_LOAD_EXTENSION",
+                "-fno-sanitize=undefined", // Disable UBSan to avoid linker errors
+            },
+        });
     }
 
     return host_lib;
