@@ -1,0 +1,16 @@
+.{
+    .name = .chatserver,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .roc = .{
+            .path = "../roc",
+        },
+    },
+    .fingerprint = 0xd128d4f1272f1732,
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "platform",
+    },
+}

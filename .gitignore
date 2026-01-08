@@ -1,0 +1,39 @@
+# Compiled binaries
+main
+server
+server_backup.roc
+
+# Zig build artifacts
+.zig-cache/
+zig-cache/
+zig-out/
+
+# Roc runtime storage
+.roc_storage/
+
+# Elm build artifacts
+elm-stuff/
+elm.js
+
+# Static build artifacts
+static/elm.js
+
+# Compiled platform libraries
+platform/targets/
+platform/target/
+platform/Cargo.lock
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Backup files
+*_backup.roc
+*_backup.elm
