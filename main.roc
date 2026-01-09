@@ -19,7 +19,7 @@ main! = |args| {
     Stdout.line!("Server listening on http://localhost:".concat(port_str))
     Stdout.line!("Storage backend: SQLite (.roc_storage/notes.db)")
 
-    Ok({})
+    event_loop!()
 }
 
 parse_port_arg = |args| {
