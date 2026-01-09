@@ -7,78 +7,79 @@ import pf.Stderr
 import pf.WebServer
 import pf.SQLite
 
-main! : {} => Try({}, [Exit(I32)])
-main! = |{}| {
-    port = 8080
-    Stdout.line!("Starting Notey server on port ${port.to_str()}...")
+main! : List(Str) => [Ok({}), Err(Str)]
+main! = |args| {
+    port = parse_port_arg(args)
+    port_str = port.to_str()
+    Stdout.line!("Starting Notey server on port ".concat(port_str).concat("..."))
 
-    match SQLite.init!({}) {
-        Ok({}) => {}
-        Err(msg) => {
-            Stderr.line!("Failed to initialize database: ${msg}")
-            return Err(Exit(1))
-        }
-    }
+    SQLite.init!({})?
+    WebServer.listen!(port)?
 
-    match WebServer.listen!(port) {
-        Ok({}) =>
-            Stdout.line!("Server listening on http://localhost:${port.to_str()}")
-        Err(msg) => {
-            Stderr.line!("Failed to start server: ${msg}")
-            return Err(Exit(1))
-        }
-    }
-
+    Stdout.line!("Server listening on http://localhost:".concat(port_str))
     Stdout.line!("Storage backend: SQLite (.roc_storage/notes.db)")
-    event_loop!([])
+
+    Ok({})
 }
 
-event_loop! : List(U64) => Try({}, [Exit(I32)])
-event_loop! = |ws_clients| {
+parse_port_arg = |args| {
+    arg_count = List.len(args)
+    if arg_count < 2 {
+        8080
+    } else {
+        find_port_in_args(args, 0, arg_count)
+    }
+}
+
+find_port_in_args = |args, idx, len| {
+    if idx + 1 >= len {
+        8080
+    } else {
+        match (List.get(args, idx), List.get(args, idx + 1)) {
+            (Ok(arg), Ok(next)) => {
+                if arg == "--port" {
+                    match U64.from_str(next) {
+                        Ok(p) => if p > 0 and p <= 65535 { p } else { 8080 }
+                        Err(_) => 8080
+                    }
+                } else {
+                    find_port_in_args(args, idx + 1, len)
+                }
+            }
+            _ => 8080
+        }
+    }
+}
+
+event_loop! = || {
     event = WebServer.accept!()
 
     match event {
-        Connected(client_id) => {
-            Stdout.line!("✓ WebSocket client ${client_id.to_str()} connected")
-            new_clients = List.append(ws_clients, client_id)
-            event_loop!(new_clients)
+        Connected(_) => {
+            event_loop!()
         }
-        
+
+        Disconnected(_) => {
+            event_loop!()
+        }
+
         Message(client_id, request) => {
             req_size = Str.count_utf8_bytes(request)
-            Stdout.line!("📨 Message from client ${client_id.to_str()} (${req_size.to_str()} bytes)")
-            # Check if this is an HTTP request or WebSocket message
-            if Str.starts_with(request, "GET ") or Str.starts_with(request, "POST ") {
-                # HTTP API request
-                response = handle_http_request!(request)
-                match WebServer.send!(client_id, response) {
-                    Ok({}) => {}
-                    Err(_) => {}
-                }
-                WebServer.close!(client_id)
-                
-                # If this was a save, broadcast to WebSocket clients
-                if Str.contains(request, "POST") and Str.contains(request, "/api/notes") {
-                    # WebSockets removed
-                }
-                event_loop!(ws_clients)
-            } else {
-                # Non-HTTP message - ignore
-                event_loop!(ws_clients)
+            Stdout.line!("📨 Request (${req_size.to_str()} bytes)")
+            response = handle_http_request!(request)
+            match WebServer.send!(client_id, response) {
+                Ok({}) => {}
+                Err(_) => {}
             }
+            WebServer.close!(client_id)
+            event_loop!()
         }
-        
-        Disconnected(client_id) => {
-            Stdout.line!("Client ${client_id.to_str()} disconnected")
-            new_clients = List.drop_if(ws_clients, |id| id == client_id)
-            event_loop!(new_clients)
-        }
-        
+
         Error(err) => {
             Stderr.line!("Error: ${err}")
-            event_loop!(ws_clients)
+            event_loop!()
         }
-        
+
         Shutdown => {
             Stdout.line!("Server shutting down")
             Ok({})
@@ -91,7 +92,7 @@ handle_http_request! = |request| {
     has_api = Str.contains(request, "/api/")
     has_notes = Str.contains(request, "notes")
     has_post = Str.contains(request, "POST")
-    
+
     if has_api and has_notes {
         if has_post {
             save_notes!(request)
@@ -118,7 +119,7 @@ save_notes! = |request| {
         Ok(b) => b
         Err(_) => "{}"
     }
-    
+
     match SQLite.save_notes!(body) {
         Ok({}) => http_ok_response("application/json", "{\"success\":true}")
         Err(msg) => http_500("Failed to save notes: ${msg}")

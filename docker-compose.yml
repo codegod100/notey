@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  notey:
+    build: .
+    container_name: notey-roc
+    ports:
+      - "8080:8080"
+    volumes:
+      - roc_storage:/.roc_storage
+    restart: unless-stopped
+
+volumes:
+  roc_storage:

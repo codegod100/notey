@@ -1,5 +1,5 @@
 WebServer :: [].{
-    listen! : U16 => [Ok({}), Err(Str)]
+    listen! : U64 => [Ok({}), Err(Str)]
     run! : () => [Ok({}), Err(Str)]
     accept! : () => [Connected(U64), Disconnected(U64), Message(U64, Str), Error(Str), Shutdown]
     send! : U64, Str => [Ok({}), Err(Str)]

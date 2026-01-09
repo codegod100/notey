@@ -146,10 +146,8 @@ comptime {
 fn __main() callconv(.c) void {}
 
 fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
-    _ = argc;
-    _ = argv;
     initEnviron();
-    return platform_main();
+    return platform_main(argc, argv);
 }
 
 // Roc types
@@ -403,7 +401,7 @@ const WebSocketServer = struct {
             }
         } else if (std.mem.startsWith(u8, request, "GET ") or std.mem.startsWith(u8, request, "POST ")) {
             // HTTP request - try to serve static or forward API
-            self.handleHttpRequest(client, request) catch |err| {
+            _ = self.handleHttpRequest(client, request) catch |err| {
                 if (err == error.ApiRequest) {
                     // API request - allocate and copy request data for Roc
                     // request_data will be freed, so we need to copy
@@ -415,7 +413,11 @@ const WebSocketServer = struct {
                 }
                 return err;
             };
+
+            // HTTP request was handled (either served static file or returned error)
+            // Don't forward to the event loop
             client.is_closed = true;
+            return error.NotWebSocket;
         }
 
         return error.NotWebSocket;
@@ -682,7 +684,7 @@ fn hostedWebServerListen(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, ar
         discriminant: u8,
     };
 
-    const Args = extern struct { port: u16 };
+    const Args = extern struct { port: u64 };
     const args: *Args = @ptrCast(@alignCast(args_ptr));
     const result: *Result = @ptrCast(@alignCast(ret_ptr));
 
@@ -703,7 +705,7 @@ fn hostedWebServerListen(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, ar
     };
     server.* = WebSocketServer.init(host.gpa.allocator());
 
-    server.listen(args.port) catch |err| {
+    server.listen(@intCast(args.port)) catch |err| {
         var buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Failed to listen: {}", .{err}) catch "Listen failed";
         if (RocStr.fitsInSmallStr(msg.len)) {
@@ -1058,7 +1060,7 @@ const hosted_function_ptrs = [_]builtins.host_abi.HostedFn{
 };
 
 /// Platform host entrypoint
-fn platform_main() c_int {
+fn platform_main(argc: c_int, argv: [*][*:0]u8) c_int {
     var host_env = HostEnv{
         .gpa = std.heap.GeneralPurposeAllocator(.{}){},
         .server = null,
@@ -1079,8 +1081,20 @@ fn platform_main() c_int {
     };
 
     var exit_code: i32 = -99;
-    var empty_arg: u8 = 0;
-    roc__main_for_host(&roc_ops, @as(*anyopaque, @ptrCast(&exit_code)), @as(*anyopaque, @ptrCast(&empty_arg)));
+
+    // Convert argv to Roc List(Str)
+    const count: usize = @intCast(argc);
+    var args_list = if (count == 0) RocList.empty() else RocList.list_allocate(@alignOf(RocStr), count, @sizeOf(RocStr), true, &roc_ops);
+    if (count > 0) {
+        const items: [*]RocStr = @ptrCast(@alignCast(args_list.bytes));
+        for (0..count) |i| {
+            const arg_ptr = argv[i];
+            const len = std.mem.len(arg_ptr);
+            items[i] = RocStr.fromSlice(arg_ptr[0..len], &roc_ops);
+        }
+    }
+
+    roc__main_for_host(&roc_ops, @as(*anyopaque, @ptrCast(&exit_code)), @as(*anyopaque, @ptrCast(&args_list)));
 
     // Cleanup server
     if (host_env.server) |server| {

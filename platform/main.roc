@@ -1,5 +1,5 @@
 platform ""
-    requires {} { main! : {} => Try({}, [Exit(I32)]) }
+    requires {} { main! : List(Str) => [Ok({}), Err(Str)] }
     exposes [Stdout, Stderr, WebServer, Storage, SQLite]
     packages {}
     provides { main_for_host!: "main_for_host" }
@@ -25,11 +25,14 @@ import Storage
 import SQLite
 
 
-main_for_host! : {} => I32
-main_for_host! = |{}| {
-    result = main!({})
+main_for_host! : List(Str) => I32
+main_for_host! = |args| {
+    result = main!(args)
     match result {
         Ok({}) => 0
-        Err(Exit(code)) => code
+        Err(msg) => {
+            Stderr.line!("Error: ${msg}")
+            1
+        }
     }
 }
