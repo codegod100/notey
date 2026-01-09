@@ -6,10 +6,11 @@ import pf.Stdout
 import pf.Stderr
 import pf.WebServer
 import pf.SQLite
+import Args exposing [parse_port]
 
 main! : List(Str) => [Ok({}), Err(Str)]
 main! = |args| {
-    port = parse_port_arg(args)
+    port = parse_port(args)
     port_str = port.to_str()
     Stdout.line!("Starting Notey server on port ".concat(port_str).concat("..."))
 
@@ -20,35 +21,6 @@ main! = |args| {
     Stdout.line!("Storage backend: SQLite (.roc_storage/notes.db)")
 
     event_loop!()
-}
-
-parse_port_arg = |args| {
-    arg_count = List.len(args)
-    if arg_count < 2 {
-        8080
-    } else {
-        find_port_in_args(args, 0, arg_count)
-    }
-}
-
-find_port_in_args = |args, idx, len| {
-    if idx + 1 >= len {
-        8080
-    } else {
-        match (List.get(args, idx), List.get(args, idx + 1)) {
-            (Ok(arg), Ok(next)) => {
-                if arg == "--port" {
-                    match U64.from_str(next) {
-                        Ok(p) => if p > 0 and p <= 65535 { p } else { 8080 }
-                        Err(_) => 8080
-                    }
-                } else {
-                    find_port_in_args(args, idx + 1, len)
-                }
-            }
-            _ => 8080
-        }
-    }
 }
 
 event_loop! = || {
