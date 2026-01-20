@@ -688,22 +688,22 @@ fn hostedWebServerListen(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, ar
     const args: *Args = @ptrCast(@alignCast(args_ptr));
     const result: *Result = @ptrCast(@alignCast(ret_ptr));
 
-    const host: *HostEnv = @ptrCast(@alignCast(ops.env));
-
-    if (host.server) |_| {
+    // Use global_server for interpreter compatibility
+    if (global_server) |_| {
         const msg = "Server already running";
         result.payload = RocStr.fromSliceSmall(msg);
         result.discriminant = 0; // Err
         return;
     }
 
-    const server = host.gpa.allocator().create(WebSocketServer) catch {
+    // Use c_allocator directly for interpreter compatibility
+    const server = c_allocator.create(WebSocketServer) catch {
         const msg = "Failed to allocate server";
         result.payload = RocStr.fromSliceSmall(msg);
         result.discriminant = 0;
         return;
     };
-    server.* = WebSocketServer.init(host.gpa.allocator());
+    server.* = WebSocketServer.init(c_allocator);
 
     server.listen(@intCast(args.port)) catch |err| {
         var buf: [128]u8 = undefined;
@@ -717,7 +717,6 @@ fn hostedWebServerListen(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, ar
         return;
     };
 
-    host.server = server;
     global_server = server;
 
     result.payload = RocStr.empty();
@@ -729,6 +728,7 @@ fn hostedWebServerListen(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, ar
 fn hostedWebServerRun(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
     const stderr = std.fs.File.stderr();
     const stdout = std.fs.File.stdout();
+    _ = ops;
     _ = args_ptr;
 
     const Result = extern struct {
@@ -737,9 +737,9 @@ fn hostedWebServerRun(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_
     };
 
     const result: *Result = @ptrCast(@alignCast(ret_ptr));
-    const host: *HostEnv = @ptrCast(@alignCast(ops.env));
 
-    const server = host.server orelse {
+    // Use global_server for interpreter compatibility
+    const server = global_server orelse {
         const msg = "Server not running";
         result.payload = RocStr.fromSliceSmall(msg);
         result.discriminant = 0; // Err
@@ -847,9 +847,9 @@ fn hostedWebServerAccept(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, ar
     };
 
     const result: *Event = @ptrCast(@alignCast(ret_ptr));
-    const host: *HostEnv = @ptrCast(@alignCast(ops.env));
 
-    const server = host.server orelse {
+    // Use global_server for interpreter compatibility
+    const server = global_server orelse {
         result.discriminant = 4; // Shutdown
         return;
     };
@@ -920,9 +920,9 @@ fn hostedWebServerSend(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args
 
     const args: *Args = @ptrCast(@alignCast(args_ptr));
     const result: *Result = @ptrCast(@alignCast(ret_ptr));
-    const host: *HostEnv = @ptrCast(@alignCast(ops.env));
 
-    const server = host.server orelse {
+    // Use global_server for interpreter compatibility
+    const server = global_server orelse {
         const msg = "Server not running";
         result.payload = RocStr.fromSliceSmall(msg);
         result.discriminant = 0;
@@ -959,9 +959,9 @@ fn hostedWebServerBroadcast(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque,
 
     const args: *Args = @ptrCast(@alignCast(args_ptr));
     const result: *Result = @ptrCast(@alignCast(ret_ptr));
-    const host: *HostEnv = @ptrCast(@alignCast(ops.env));
 
-    const server = host.server orelse {
+    // Use global_server for interpreter compatibility
+    const server = global_server orelse {
         const msg = "Server not running";
         result.payload = RocStr.fromSliceSmall(msg);
         result.discriminant = 0;
@@ -987,6 +987,7 @@ fn hostedWebServerBroadcast(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque,
 
 /// WebServer.close! : U64 => {}
 fn hostedWebServerClose(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
+    _ = ops;
     _ = ret_ptr;
 
     const Args = extern struct {
@@ -994,11 +995,37 @@ fn hostedWebServerClose(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, arg
     };
 
     const args: *Args = @ptrCast(@alignCast(args_ptr));
-    const host: *HostEnv = @ptrCast(@alignCast(ops.env));
 
-    if (host.server) |server| {
+    // Use global_server for interpreter compatibility
+    if (global_server) |server| {
         server.closeClient(args.client_id);
     }
+}
+
+/// WebServer.accept_stream! - Stub (not implemented)
+fn hostedWebServerAcceptStream(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
+    _ = ops;
+    _ = args_ptr;
+    const Result = extern struct {
+        payload: RocStr,
+        discriminant: u8,
+    };
+    const result: *Result = @ptrCast(@alignCast(ret_ptr));
+    result.payload = RocStr.fromSliceSmall("accept_stream not implemented");
+    result.discriminant = 0;
+}
+
+/// WebServer.set_event_handler! - Stub (not implemented)
+fn hostedWebServerSetEventHandler(ops: *builtins.host_abi.RocOps, ret_ptr: *anyopaque, args_ptr: *anyopaque) callconv(.c) void {
+    _ = ops;
+    _ = args_ptr;
+    const Result = extern struct {
+        payload: RocStr,
+        discriminant: u8,
+    };
+    const result: *Result = @ptrCast(@alignCast(ret_ptr));
+    result.payload = RocStr.fromSliceSmall("set_event_handler not implemented");
+    result.discriminant = 0;
 }
 
 /// Stderr.line! : Str => {}
@@ -1050,13 +1077,15 @@ const hosted_function_ptrs = [_]builtins.host_abi.HostedFn{
     hostedStorageList,
     hostedStorageLoad,
     hostedStorageSave,
-    // WebServer: accept!, broadcast!, close!, listen!, run!, send!
+    // WebServer: accept!, accept_stream!, broadcast!, close!, listen!, run!, send!, set_event_handler!
     hostedWebServerAccept,
+    hostedWebServerAcceptStream,
     hostedWebServerBroadcast,
     hostedWebServerClose,
     hostedWebServerListen,
     hostedWebServerRun,
     hostedWebServerSend,
+    hostedWebServerSetEventHandler,
 };
 
 /// Platform host entrypoint

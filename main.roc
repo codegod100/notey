@@ -7,6 +7,7 @@ import pf.Stderr
 import pf.WebServer
 import pf.SQLite
 import Args exposing [parse_port]
+import Http exposing [parse_request]
 
 main! : List(Str) => [Ok({}), Err(Str)]
 main! = |args| {
@@ -27,11 +28,13 @@ event_loop! = || {
     event = WebServer.accept!()
 
     match event {
-        Connected(_) => {
+        Connected(client_id) => {
+            Stdout.line!("Client ${client_id.to_str()} connected")
             event_loop!()
         }
 
-        Disconnected(_) => {
+        Disconnected(client_id) => {
+            Stdout.line!("Client ${client_id.to_str()} disconnected")
             event_loop!()
         }
 
@@ -60,19 +63,19 @@ event_loop! = || {
 }
 
 handle_http_request! : Str => Str
-handle_http_request! = |request| {
-    has_api = Str.contains(request, "/api/")
-    has_notes = Str.contains(request, "notes")
-    has_post = Str.contains(request, "POST")
-
-    if has_api and has_notes {
-        if has_post {
-            save_notes!(request)
-        } else {
+handle_http_request! = |request_str| {
+    request = parse_request(request_str)
+    
+    match request {
+        GetNotes => {
             get_notes!({})
         }
-    } else {
-        http_404({})
+        SaveNotes(body) => {
+            save_notes!(body)
+        }
+        Unknown => {
+            http_404({})
+        }
     }
 }
 
@@ -85,13 +88,7 @@ get_notes! = |{}| {
 }
 
 save_notes! : Str => Str
-save_notes! = |request| {
-    body_parts = Str.split_on(request, "\r\n\r\n")
-    body = match List.get(body_parts, 1) {
-        Ok(b) => b
-        Err(_) => "{}"
-    }
-
+save_notes! = |body| {
     match SQLite.save_notes!(body) {
         Ok({}) => http_ok_response("application/json", "{\"success\":true}")
         Err(msg) => http_500("Failed to save notes: ${msg}")
