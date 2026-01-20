@@ -1,5 +1,6 @@
 # Compiled binaries
 main
+backend/main
 server
 server_backup.roc
 
@@ -7,6 +8,7 @@ server_backup.roc
 .zig-cache/
 zig-cache/
 zig-out/
+platform/libhost.a
 
 # Roc runtime storage
 .roc_storage/

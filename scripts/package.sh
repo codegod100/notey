@@ -22,7 +22,7 @@ mkdir -p "$STAGING_DIR/static"
 
 # Copy binary
 echo "Copying binary..."
-cp main "$STAGING_DIR/"
+cp backend/main "$STAGING_DIR/"
 chmod +x "$STAGING_DIR/main"
 
 # Copy static files
@@ -36,9 +36,9 @@ cp -r platform/*.roc "$STAGING_DIR/platform/" 2>/dev/null || true
 cp -r platform/targets/* "$STAGING_DIR/platform/targets/" 2>/dev/null || true
 
 # Copy source files (optional, for reference)
-cp main.roc "$STAGING_DIR/"
-cp Args.roc "$STAGING_DIR/"
-cp Http.roc "$STAGING_DIR/"
+cp backend/main.roc "$STAGING_DIR/"
+cp backend/Args.roc "$STAGING_DIR/"
+cp backend/Http.roc "$STAGING_DIR/"
 
 # Create .roc_storage directory structure
 mkdir -p "$STAGING_DIR/.roc_storage"
